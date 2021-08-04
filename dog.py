@@ -714,7 +714,6 @@ class Dog(gym.Env):
 
 	
 	def _get_state(self, pure_state=False):
-
 		
 		if self.version == 2 or self.state_mode == "h_body_arm":
 			joints_state = self._p.getJointStates(self.dogId, self.motor_ids)
@@ -940,8 +939,6 @@ class Dog(gym.Env):
 						else:
 							x_togo_l = x_1 + (-math.sin(2*b_sin*(sub_sub_t-period_half)-PI/2)/2+0.5)*(x_2-x_1)
 							y_togo_l = y_1 + (-math.sin(2*b_sin*(sub_sub_t-period_half)-PI/2)/2+0.5)*(y_2-y_1)
-						
-
 			
 				inter_pos[7], inter_pos[8] = self._IK(x_togo_r, y_togo_r)
 				inter_pos[10], inter_pos[11] = self._IK(x_togo_l, y_togo_l)
@@ -1005,8 +1002,6 @@ class Dog(gym.Env):
 
 
 			self.sin_value = sin_value
-
-
 
 			# inter_pos[7] = self.stand_pos[7] + a_sin*math.sin(b_sin*self.sub_t) 
 			# inter_pos[8] = self.stand_pos[8] - a_sin*math.sin(b_sin*self.sub_t) 
@@ -1238,6 +1233,63 @@ class Dog(gym.Env):
 			self._p.resetJointState(self.dogId, j, pos, 0)
 		if self.debug_tuner_enable:
 			self.debug_values = [self._p.readUserDebugParameter(tunner) for tunner in self.debug_tuners]
+
+	def step_jpos(self, jpos=None):
+		if jpos is not None:
+			assert len(jpos) == 12
+			for i, pos in zip(self.motor_ids, jpos):
+				self._p.setJointMotorControl2(self.dogId, i, self._p.POSITION_CONTROL, pos, force=self.motor_force_r, maxVelocity=self.max_vel)
+		self._p.stepSimulation() 
+
+	def update_lcm_state(self):
+
+		joints_state = self._p.getJointStates(self.dogId, self.motor_ids)
+		pos, quat = self._p.getBasePositionAndOrientation(self.dogId)
+		vWorld, omegaWorld = self._p.getBaseVelocity(self.dogId)
+		p_invert, quat_invert = self._p.invertTransform(pos, quat)
+		get_matrix = self._p.getMatrixFromQuaternion(quat_invert)
+		omegaBody = [get_matrix[0] * omegaWorld[0] + get_matrix[1] * omegaWorld[1] + get_matrix[2] * omegaWorld[2], 
+					 get_matrix[3] * omegaWorld[0] + get_matrix[4] * omegaWorld[1] + get_matrix[5] * omegaWorld[2],
+					 get_matrix[6] * omegaWorld[0] + get_matrix[7] * omegaWorld[1] + get_matrix[8] * omegaWorld[2]]
+
+		self.lcm_state = self.LcmState()
+		self.lcm_state.p = [pos[i] for i in range(3)]
+		self.lcm_state.vWorld = [i for i in vWorld]
+		self.lcm_state.vBody = [0]*3
+		self.lcm_state.vRemoter = [0]*3
+		self.lcm_state.rpy = [0]*3
+		self.lcm_state.omegaBody = [i for i in omegaBody]
+		self.lcm_state.omegaWorld = [i for i in omegaWorld]
+		self.lcm_state.quat = [quat[i] for i in range(4)]
+		self.lcm_state.aBody = [0]*3
+		self.lcm_state.aWorld = [0]*3
+
+		self.lcm_state.q = [0]*12
+		self.lcm_state.qd = [0]*12
+		self.lcm_state.p_leg = [joints_state[i][0] for i in range(12)]
+		self.lcm_state.v = [0]*12
+		self.lcm_state.tau_est = [0]*12
+
+	class LcmState(object):
+		def __init__(self):
+			self.p = []
+			self.vWorld = []
+			self.vBody = []
+			self.vRemoter = []
+			self.rpy = []
+			self.omegaBody = []
+			self.omegaWorld = []
+			self.quat = []
+			self.aBody = []
+			self.aWorld = []
+			self.q = []
+			self.qd = []
+			self.p_leg = []
+			self.v = []
+			self.tau_est = []
+
+
+
 
 def test():
 
