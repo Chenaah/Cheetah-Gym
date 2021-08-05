@@ -1,4 +1,5 @@
 # import pybullet as p
+import os
 import pybullet
 from pybullet_utils import bullet_client as bc
 import pybullet_data
@@ -315,7 +316,9 @@ class Dog(gym.Env):
 			self.startpoint = [0, 0, 0.07]
 			self.startOrientation = self._p.getQuaternionFromEuler([0,0,0])
 
-		if path.exists("models/mini_cheetah.urdf"):
+		if path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), "models/mini_cheetah.urdf")):
+			self.urdf_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models/mini_cheetah.urdf")
+		elif path.exists("models/mini_cheetah.urdf"):
 			self.urdf_dir = "models/mini_cheetah.urdf"
 		elif path.exists("../models/mini_cheetah.urdf"):
 			self.urdf_dir = "../models/mini_cheetah.urdf"
