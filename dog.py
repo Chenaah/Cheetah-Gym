@@ -1263,7 +1263,7 @@ class Dog(gym.Env):
 		self.lcm_state.rpy = [0]*3
 		self.lcm_state.omegaBody = [i for i in omegaBody]
 		self.lcm_state.omegaWorld = [i for i in omegaWorld]
-		self.lcm_state.quat = [quat[i] for i in range(4)]
+		self.lcm_state.quat = [quat[1], quat[2], quat[3], quat[0]]
 		self.lcm_state.aBody = [0]*3
 		self.lcm_state.aWorld = [0]*3
 
