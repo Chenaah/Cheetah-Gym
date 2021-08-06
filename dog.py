@@ -312,6 +312,9 @@ class Dog(gym.Env):
 		elif self.mode == "stand":
 			self.startpoint = [0, 0, 0.5562]#0.54]
 			self.startOrientation = self._p.getQuaternionFromEuler([0,-1.3414458169,0])
+		elif self.fix_body and self.mode == "sleep":
+			self.startpoint = [0, 0, 0.5]
+			self.startOrientation = self._p.getQuaternionFromEuler([0,0,0])
 		elif self.mode == "sleep":
 			self.startpoint = [0, 0, 0.07]
 			self.startOrientation = self._p.getQuaternionFromEuler([0,0,0])
@@ -364,6 +367,9 @@ class Dog(gym.Env):
 		elif self.mode == "stand":
 			self.startpoint = [0, 0, 0.5562]#0.54]
 			self.startOrientation = self._p.getQuaternionFromEuler([0,-1.3414458169,0])
+		elif self.fix_body and self.mode == "sleep":
+			self.startpoint = [0, 0, 0.5]
+			self.startOrientation = self._p.getQuaternionFromEuler([0,0,0])
 		elif self.mode == "sleep":
 			self.startpoint = [0, 0, 0.07]
 			self.startOrientation = self._p.getQuaternionFromEuler([0,0,0])
@@ -620,8 +626,6 @@ class Dog(gym.Env):
 		# print(f"theta1_prime1: {pos_impl[1]}; theta1_prime2: {pos_impl[4]}")
 		# reach_limit = False
 
-		
-
 		if reach_limit:
 			limit_cost = 0.1
 		else:
@@ -651,8 +655,6 @@ class Dog(gym.Env):
 			assert np.all(np.array(self.leg_offsets) == 0)
 
 		self.leg_offsets = box(self.leg_offsets, [[-0.6, 0.6]]*4)[0]
-
-
 
 		for i in range(max_iter+1):
 			timer7 = time.time()
@@ -693,9 +695,6 @@ class Dog(gym.Env):
 		# print(f"reward = {height} - {limit_cost} + {x} - {action_cost} + 0.5")
 		# print("PITCH: {:.4f}  HEIGHT: {:.4f}".format(self.pitch, height))
 		self.t += 1
-
-
-
 
 		if self.t > 1000 or height < 0.2 or abs(self.p_error) > 0.65 :  #self.pitch > -0.7  (error around 0.64066)  : #-0.27:
 			# print(self.t > 1000, ", ", height < 0.2, ", ", self.pitch > -0.7, ", PITCH: ", self.pitch)
@@ -1263,13 +1262,13 @@ class Dog(gym.Env):
 		self.lcm_state.rpy = [0]*3
 		self.lcm_state.omegaBody = [i for i in omegaBody]
 		self.lcm_state.omegaWorld = [i for i in omegaWorld]
-		self.lcm_state.quat = [quat[1], quat[2], quat[3], quat[0]]
+		self.lcm_state.quat = [quat[3], quat[0], quat[1], quat[2]]   # quat [x, y, z, w] -->  lcm.quat [w, x, y, z]
 		self.lcm_state.aBody = [0]*3
 		self.lcm_state.aWorld = [0]*3
 
-		self.lcm_state.q = [0]*12
+		self.lcm_state.q = [joints_state[i][0] for i in range(12)]
 		self.lcm_state.qd = [0]*12
-		self.lcm_state.p_leg = [joints_state[i][0] for i in range(12)]
+		self.lcm_state.p_leg = [0]*12
 		self.lcm_state.v = [0]*12
 		self.lcm_state.tau_est = [0]*12
 
@@ -1290,6 +1289,10 @@ class Dog(gym.Env):
 			self.p_leg = []
 			self.v = []
 			self.tau_est = []
+
+	def get_joins_pos(self):
+		joints_state = self._p.getJointStates(self.dogId, self.motor_ids)
+		return [joints_state[i][0] for i in range(12)]
 
 
 
@@ -1343,4 +1346,22 @@ def human_optimiser():
 			s, r, done, info =  dog.step([0,0,0,0], param_opt=[0.015, 0, 0, 6, 0.1, 0.1, 0.1, 0.1, 0.1])
 		n_epi += 1
 
-# human_optimiser()
+def simple_test():
+	global k_
+	k_ = 0.6102
+	dog = Dog(render=False, real_time=False, immortal=False, custom_dynamics=False, version=3, mode="stand")
+	th2 = dog._theta1_hat(-1.00009)
+	print(th2)
+
+def test_pitch():
+	dog = Dog(render=True, real_time=True, immortal=False, custom_dynamics=False, version=3, mode="stand")
+	dog.reset()
+	while True:
+		# dog.step_jpos([-1.73918e-05, -1.46079, 0.99807, -1.8719e-05, -1.46079, 0.998076, 0.000439517, -1.09479, -1.00009, -0.000370475, -1.09484, -1.00013])
+		dog.step_jpos()
+		time.sleep(0.002)
+		dog.get_full_state()
+		print(dog.pitch)
+
+
+# test_pitch()
