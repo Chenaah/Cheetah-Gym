@@ -101,6 +101,7 @@ def quat_to_YZX(quat):
 class Dog(gym.Env):
 	"""The main environment object
     Args:
+    	mode: (reset mode) stand / sleep / standup
         action_mode (str): "whole": whole RL control, "partial": RL+BO, "residual": residual RL + BO, 
         custom_dynamics: the environment will use dynamics parameters from pyBullet if False
         version: different state dimension  (Decrepit, V2: "h_body_arm" state mode)
@@ -119,7 +120,8 @@ class Dog(gym.Env):
 	def __init__(self, render=False, fix_body=False, real_time=False, immortal=False, custom_dynamics=True, version=3, normalised_abduct=False,
 		mode="stand", action_mode="residual", action_multiplier=0.4, residual_multiplier=0.2, note="", tuner_enable=False, action_tuner_enable=False,
 		A_range = (0.01, 1), B_range = (0.01, 0.1), arm_pd_control=False, fast_error_update=False, state_mode="body_arm_p", leg_action_mode="none", leg_offset_multiplier=0.2, 
-		ini_step_param=[1, 0.35], experiment_info_str = "", param_opt=[0.015, 0, 0, 6, 0.1, 0.1, 0.1, 0.1], debug_tuner_enable=False, gait="rose", sub_step_callback=None):
+		ini_step_param=[1, 0.35], experiment_info_str = "", param_opt=[0.015, 0, 0, 6, 0.1, 0.1, 0.1, 0.1], debug_tuner_enable=False, gait="rose", sub_step_callback=None,
+		num_history_observation=0, randomise=False, custom_dynmics={}):
 		super(Dog, self).__init__()
 
 		self.render = render
@@ -149,9 +151,15 @@ class Dog(gym.Env):
 		self.debug_tuner_enable = debug_tuner_enable
 		self.gait = gait
 		self.sub_step_callback = sub_step_callback
+		self.num_history_observation = num_history_observation
+		self.randomise = randomise
 
 
 		self.param_opt = (self.param_opt + [0]*9)[:9] # for compatibility
+
+		if self.mode == "standup":
+			assert os.path.isfile("standup_actions.npy")
+			self.standup_actions = np.load("standup_actions.npy")
 
 		if render:
 			# self.client = p.connect(p.GUI) 
@@ -298,6 +306,8 @@ class Dog(gym.Env):
 		self.leg_offsets = [0, 0, 0, 0]   # -0.6~0.6
 		self.leg_offsets_old = [0, 0, 0, 0]   # -0.6~0.6
 
+		self.observations = []
+
 
 	def build_world(self):
 		self._p.setGravity(0, 0, -9.794) 
@@ -313,10 +323,10 @@ class Dog(gym.Env):
 		elif self.mode == "stand":
 			self.startpoint = [0, 0, 0.5562]#0.54]
 			self.startOrientation = self._p.getQuaternionFromEuler([0,-1.3414458169,0])
-		elif self.fix_body and self.mode == "sleep":
+		elif self.fix_body and (self.mode == "sleep" or self.mode == "standup"):
 			self.startpoint = [0, 0, 0.5]
 			self.startOrientation = self._p.getQuaternionFromEuler([0,0,0])
-		elif self.mode == "sleep":
+		elif self.mode == "sleep" or self.mode == "standup":
 			self.startpoint = [0, 0, 0.07]
 			self.startOrientation = self._p.getQuaternionFromEuler([0,0,0])
 
@@ -368,10 +378,10 @@ class Dog(gym.Env):
 		elif self.mode == "stand":
 			self.startpoint = [0, 0, 0.5562]#0.54]
 			self.startOrientation = self._p.getQuaternionFromEuler([0,-1.3414458169,0])
-		elif self.fix_body and self.mode == "sleep":
+		elif self.fix_body and (self.mode == "sleep" or self.mode == "standup"):
 			self.startpoint = [0, 0, 0.5]
 			self.startOrientation = self._p.getQuaternionFromEuler([0,0,0])
-		elif self.mode == "sleep":
+		elif self.mode == "sleep" or self.mode == "standup" :
 			self.startpoint = [0, 0, 0.07]
 			self.startOrientation = self._p.getQuaternionFromEuler([0,0,0])
 
@@ -413,7 +423,7 @@ class Dog(gym.Env):
 
 		if self.mode == "stand":
 			self.ini_pos = [0.0, -PI/2, self._theta2_prime_hat(-PI/2), 0.0, -PI/2, self._theta2_prime_hat(-PI/2), 0.0, -0.94, -1, 0.0, -0.94, -1]
-		elif self.mode == "sleep":
+		elif self.mode == "sleep" or self.mode == "standup":
 			self.ini_pos = [-0.5, -1.1, 2.79, 0.5, -1.1, 2.79, -1, -1.4, 2, 1, -1.4, 2]
 
 		for j, pos in zip(self.motor_ids, self.ini_pos):
@@ -433,6 +443,12 @@ class Dog(gym.Env):
 			self._p.stepSimulation() 
 			if self.real_time:
 				time.sleep(0.002)
+
+		if self.mode == "standup":
+			for a in self.standup_actions:
+				self.step_jpos(a)
+				if self.real_time:
+					time.sleep(0.002)
 
 			# _, quat = self._p.getBasePositionAndOrientation(self.dogId)
 			# if not np.sum(np.array(quat) - np.array(self.startOrientation)) < 0.00000001:
@@ -789,6 +805,18 @@ class Dog(gym.Env):
 				assert state.size == 3+3+4+4
 				x = full_state[0]
 				height = full_state[2]
+
+			self.observations.append(state)
+
+			if len(self.observations) > self.num_history_observation + 1:
+				self.observations = self.observations[1:]
+			elif len(self.observations) < self.num_history_observation + 1:
+				while len(self.observations) < self.num_history_observation + 1:
+					self.observations.append(self.observations[-1])
+
+			assert len(self.observations) == self.num_history_observation + 1
+
+			state = np.array(self.observations).flat
 
 
 		return state, x, height
@@ -1375,5 +1403,11 @@ def test_pitch():
 		dog.get_full_state()
 		print(dog.pitch)
 
+def test_standup():
+	dog = Dog(render=True, real_time=True, immortal=False, custom_dynamics=False, version=3, mode="standup")
+	dog.reset()
+	while True:
+		pass
 
-# test_pitch()
+
+test_standup()
