@@ -119,7 +119,7 @@ class Dog(gym.Env):
 	def __init__(self, render=False, fix_body=False, real_time=False, immortal=False, custom_dynamics=True, version=3, normalised_abduct=False,
 		mode="stand", action_mode="residual", action_multiplier=0.4, residual_multiplier=0.2, note="", tuner_enable=False, action_tuner_enable=False,
 		A_range = (0.01, 1), B_range = (0.01, 0.1), arm_pd_control=False, fast_error_update=False, state_mode="body_arm_p", leg_action_mode="none", leg_offset_multiplier=0.2, 
-		ini_step_param=[1, 0.35], experiment_info_str = "", param_opt=[0.015, 0, 0, 6, 0.1, 0.1, 0.1, 0.1], debug_tuner_enable=False, gait="rose"):
+		ini_step_param=[1, 0.35], experiment_info_str = "", param_opt=[0.015, 0, 0, 6, 0.1, 0.1, 0.1, 0.1], debug_tuner_enable=False, gait="rose", sub_step_callback=None):
 		super(Dog, self).__init__()
 
 		self.render = render
@@ -148,6 +148,7 @@ class Dog(gym.Env):
 		self.param_opt = param_opt
 		self.debug_tuner_enable = debug_tuner_enable
 		self.gait = gait
+		self.sub_step_callback = sub_step_callback
 
 
 		self.param_opt = (self.param_opt + [0]*9)[:9] # for compatibility
@@ -655,6 +656,7 @@ class Dog(gym.Env):
 			assert np.all(np.array(self.leg_offsets) == 0)
 
 		self.leg_offsets = box(self.leg_offsets, [[-0.6, 0.6]]*4)[0]
+		print(f"[DEBUG] [A] self.leg_offsets_old: ", self.leg_offsets_old)
 
 		for i in range(max_iter+1):
 			timer7 = time.time()
@@ -677,8 +679,8 @@ class Dog(gym.Env):
 				self.p_error_yaw = self.yaw
 				self.d_error_yaw = self.omegaBody[2]
 
-
-		self.leg_offsets_old = self.leg_offsets
+		self.leg_offsets_old = [i for i in self.leg_offsets]
+		# self.leg_offsets_old = self.leg_offsets
 
 
 		if not self.fast_error_update:
@@ -844,9 +846,12 @@ class Dog(gym.Env):
 			inter_pos = a * ini_pos + b * fin_pos;
 
 			leg_offsets = a * np.array(self.leg_offsets_old) + b * np.array(self.leg_offsets)
+			print(f"leg_offsets = {a} * {np.array(self.leg_offsets_old)} + {b} * {np.array(self.leg_offsets)} = {leg_offsets}")
 		else:
 			inter_pos = fin_pos
 			leg_offsets = self.leg_offsets
+
+		assert(np.all(np.array(leg_offsets) <= 0.6) and np.all(np.array(leg_offsets) >= -0.6))
 
 		if param is not None or param_opt is not None:
 
@@ -945,6 +950,11 @@ class Dog(gym.Env):
 				inter_pos[7], inter_pos[8] = self._IK(x_togo_r, y_togo_r)
 				inter_pos[10], inter_pos[11] = self._IK(x_togo_l, y_togo_l)
 
+
+				self.sub_step_callback(t=self.sub_t, basic_action=[inter_pos[7],inter_pos[8],inter_pos[10],inter_pos[11]], offset=leg_offsets,
+									   final_action=[inter_pos[7] - leg_offsets[0], inter_pos[8] + leg_offsets[1], inter_pos[10] - leg_offsets[2], inter_pos[11] + leg_offsets[3]])  
+				# TODO: MAKE A MORE GENERAL AND INFORMATIVE VERSION
+
 				inter_pos[7] -= leg_offsets[0]
 				inter_pos[8] += leg_offsets[1]
 				inter_pos[10] -= leg_offsets[2]
@@ -976,6 +986,8 @@ class Dog(gym.Env):
 					inter_pos[7] = self.theta1 - theta2r_delta - leg_offsets[0]
 					inter_pos[11] = self.theta2 + theta2l_delta + leg_offsets[3]
 					inter_pos[10] = self.theta1 - theta2l_delta - leg_offsets[2]
+
+
 
 
 			sin_value = math.sin(b_sin*self.sub_t-PI/2)
