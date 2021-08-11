@@ -10,7 +10,6 @@ import gym
 from os import path
 import warnings
 import random
-import pyautogui
 
 PI = 3.14159
 
@@ -243,6 +242,9 @@ class Dog(gym.Env):
 
 		# print("PYBULLET CLIENT ", self.client, " STARTED")
 		self.render = render
+		if render:
+			import pyautogui
+
 
 		self.motor_ids = [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14]
 		self.motor_ids_r = [0, 1, 2, 4, 8, 9, 10, 12] # including all abduct joints
@@ -354,13 +356,13 @@ class Dog(gym.Env):
 
 		self._p.resetDebugVisualizerCamera(cameraDistance=1, cameraYaw=50, cameraPitch=-35, cameraTargetPosition=[0, 0, 0.6])
 		
-		if self.fix_body and self.mode == "stand":
+		if self.fix_body and (self.mode == "stand" or self.mode == "standup"):
 			self.startpoint = [0, 0, 0.9]
 			self.startOrientation = self._p.getQuaternionFromEuler([0,-1.3414458169,0])
 		elif self.mode == "stand":
 			self.startpoint = [0, 0, 0.5562]#0.54]
 			self.startOrientation = self._p.getQuaternionFromEuler([0,-1.3414458169,0])
-		elif self.fix_body and (self.mode == "sleep" or self.mode == "standup"):
+		elif self.fix_body and self.mode == "sleep":
 			self.startpoint = [0, 0, 0.5]
 			self.startOrientation = self._p.getQuaternionFromEuler([0,0,0])
 		elif self.mode == "sleep" or self.mode == "standup":
@@ -463,14 +465,14 @@ class Dog(gym.Env):
 
 
 		
-		if self.fix_body and self.mode == "stand":
+		if self.fix_body and (self.mode == "stand" or self.mode == "standup"):
 			self.startpoint = [0, 0, 0.9]
 			self.startOrientation = self._p.getQuaternionFromEuler([0,-1.3414458169,0])
 			self._p.changeDynamics(self.dogId, -1, mass=0)
 		elif self.mode == "stand":
 			self.startpoint = [0, 0, 0.5562]#0.54]
 			self.startOrientation = self._p.getQuaternionFromEuler([0,-1.3414458169,0])
-		elif self.fix_body and (self.mode == "sleep" or self.mode == "standup"):
+		elif self.fix_body and self.mode == "sleep":
 			self.startpoint = [0, 0, 0.5]
 			self.startOrientation = self._p.getQuaternionFromEuler([0,0,0])
 		elif self.mode == "sleep" or self.mode == "standup" :
@@ -632,6 +634,7 @@ class Dog(gym.Env):
 
 
 			self.progressing = True if self.param_opt[3] == 0 else False  # DEVELOPING FEATURE
+			self.progressing = False # TODO
 
 
 			reset_button_value = self._p.readUserDebugParameter(self.reset_button)
@@ -899,9 +902,6 @@ class Dog(gym.Env):
 		# print("[DEBUG I] MASS: ", self._p.getDynamicsInfo(self.dogId, -1)[0])
 		# print("[DEBUG I] contact damping: ", self._p.getDynamicsInfo(self.planeId, -1)[8])
 		# print("[DEBUG I] self.max_vel: ", self.max_vel)
-
-
-		
 
 
 		return state, reward, (self.done and not self.immortal), info
