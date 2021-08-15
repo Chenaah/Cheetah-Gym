@@ -1,4 +1,3 @@
-# import pybullet as p
 import os
 import pybullet
 from pybullet_utils import bullet_client as bc
@@ -10,99 +9,17 @@ import gym
 from os import path
 import warnings
 import random
+from dog_utils import box, quat_to_YZX, PI
 
-PI = 3.14159
-
-k = 0.61  #important
-gamma = 0.97213
-a = 0.395
-b = c = 0.215
-l = 0.184
-
-def box(array, tuple_list):
-	reach_limit = False
-	def box_element(x, min_x, max_x):
-		nonlocal reach_limit
-		if x < min_x:
-			reach_limit = True
-			return min_x
-		elif x > max_x:
-			reach_limit = True
-			return max_x
-		else:
-			return x
-	return np.array([box_element(array[i], tuple_list[i][0], tuple_list[i][1]) for i in range(np.size(array))]), reach_limit
-
-
-def quat_to_YZX(quat):
-
-	def compose( position, quaternion, scale ):
-		te = []
-		x = quaternion[0]
-		y = quaternion[1]
-		z = quaternion[2]
-		w = quaternion[3]
-		x2 = x + x
-		y2 = y + y
-		z2 = z + z
-		xx = x * x2
-		xy = x * y2
-		xz = x * z2
-		yy = y * y2
-		yz = y * z2
-		zz = z * z2
-		wx = w * x2
-		wy = w * y2
-		wz = w * z2
-		sx = scale[0]
-		sy = scale[1]
-		sz = scale[2]
-		te.append(( 1 - ( yy + zz ) ) * sx)
-		te.append(( xy + wz ) * sx)
-		te.append(( xz - wy ) * sx)
-		te.append(0)
-		te.append(( xy - wz ) * sy)
-		te.append(( 1 - ( xx + zz ) ) * sy)
-		te.append(( yz + wx ) * sy)
-		te.append(0)
-		te.append(( xz + wy ) * sz)
-		te.append(( yz - wx ) * sz)
-		te.append( ( 1 - ( xx + yy ) ) * sz)
-		te.append(0)
-		te.append( position[0])
-		te.append( position[1])
-		te.append( position[2])
-		te.append(1)
-
-		return te
-
-	mat = compose([0]*3, quat, [1]*3)
-	m11 = mat[0]
-	m12 = mat[4]
-	m13 = mat[8]
-	m21 = mat[1]
-	m22 = mat[5]
-	m23 = mat[9]
-	m31 = mat[2]
-	m32 = mat[6]
-	m33 = mat[1]
-	_z = math.asin(max(min(m21, 1), -1));
-
-	if abs(m21) < 0.9999999:
-		_x = math.atan2(-m23, m22);
-		_y = math.atan2(-m31, m11);
-	else:
-		_x = 0;
-		_y = math.atan2(m13, m33);
-
-	return [_x, _y, _z]
+DEBUG = False
 
 class Dog(gym.Env):
 	"""The main environment object
     Args:
     	mode: (reset mode) stand / sleep / standup
         action_mode (str): "whole": whole RL control, "partial": RL+BO, "residual": residual RL + BO, 
-        custom_dynamics: the environment will use dynamics parameters from pyBullet if False
+        custom_dynamics: old: (bool) the environment will use dynamics parameters from pyBullet if False
+        				 new: (dict) custom dynamics setting, which will overwrite the default one
         version: different state dimension  (Decrepit, V2: "h_body_arm" state mode)
         control_legs: two additional actions from RL agent to control offset angles for two legs
         state_mode (str): "h_body_arm" / "body_arm_p" / "body_arm_leg_full"
@@ -114,13 +31,15 @@ class Dog(gym.Env):
         				 RL agent is for leg control, in which case the action space is 4;
         param_opt: the initial optimising parameters. it wouldn't change until new parameters list is given to self.step() unless debug tuners are enable. whatever length of list given, 
         		   it will be reshaped to length 8 with padding zeros.
-        gait: "rose", "triangle", or "sine". only available when the last parameters in param_opt is not equal to 0
+        gait: "rose", "triangle", "sine", or "line". only available when the last parameters in param_opt is not equal to 0
+        randomise: it could be a float number from 0 to 1
+
     """
 	def __init__(self, render=False, fix_body=False, real_time=False, immortal=False, version=3, normalised_abduct=False,
 		mode="stand", action_mode="residual", action_multiplier=0.4, residual_multiplier=0.2, note="", tuner_enable=False, action_tuner_enable=False,
 		A_range = (0.01, 1), B_range = (0.01, 0.1), arm_pd_control=False, fast_error_update=False, state_mode="body_arm_p", leg_action_mode="none", leg_offset_multiplier=0.2, 
 		ini_step_param=[1, 0.35], experiment_info_str = "", param_opt=[0.015, 0, 0, 6, 0.1, 0.1, 0.1, 0.1, 0], debug_tuner_enable=False, gait="rose", sub_step_callback=None,
-		num_history_observation=0, randomise=False, custom_dynamics={}):
+		num_history_observation=0, randomise=0, external_force=0, custom_dynamics={}, custom_robot={}, progressing=False, max_steps=1000, leg_offset_range=[-0.6, 0.6]):
 		super(Dog, self).__init__()
 
 		self.render = render
@@ -136,7 +55,7 @@ class Dog(gym.Env):
 		self.note = note
 		self.tuner_enable = tuner_enable
 		self.action_tuner_enable = action_tuner_enable
-		self.A_range = A_range
+		self.A_range = A_range if not progressing else (0, float("inf"))
 		self.B_range = B_range
 		self.arm_pd_control = arm_pd_control
 		self.fast_error_update = fast_error_update
@@ -153,11 +72,15 @@ class Dog(gym.Env):
 		self.randomise = randomise
 		self.custom_dynamics = custom_dynamics
 		assert custom_dynamics is not bool  # custom_dynamics now requires a config dict
-
+		self.custom_robot = custom_robot
+		self.max_steps = max_steps
+		self.leg_offset_range = leg_offset_range
 
 		self.param_opt = (self.param_opt + [0]*9)[:9] # for compatibility
 			  
-		self.progressing = True if self.param_opt[3] == 0 else False  # DEVELOPING FEATURE
+		self.progressing = progressing  # DEVELOPING FEATURE
+		self.external_force = external_force
+
 		self.progressing_A_multiplier = 0
 
 		self.default_dynamcis = {"mass_body": 6.841, "mass_abduct": 0.550, "thigh_shank_mass": 0.200, "toe_mass": 0.0273, "lateralFriction_shank": 0.351, "lateralFriction_toe": 0.512, 
@@ -167,11 +90,17 @@ class Dog(gym.Env):
 
 		self.dynamcis_setting = {**self.default_dynamcis, **self.custom_dynamics}
 
-
-
 		if self.mode == "standup":
 			assert path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), "standup_actions.npy"))
 			self.standup_actions = np.load(os.path.join(os.path.dirname(os.path.abspath(__file__)), "standup_actions.npy"))
+
+		# robot parameters for IK/FK calculation
+		self.k = 0.61 if not "k" in self.custom_robot else self.custom_robot["k"] #important
+		self.gamma = 0.97213 if not "gamma" in self.custom_robot else self.custom_robot["gamma"]
+		self.a = 0.395 if not "a" in self.custom_robot else self.custom_robot["a"]
+		self.b = 0.215 if not "b" in self.custom_robot else self.custom_robot["b"]
+		self.c = 0.215 if not "c" in self.custom_robot else self.custom_robot["c"]
+		self.l = 0.184 if not "l" in self.custom_robot else self.custom_robot["l"]
 
 		if render:
 			# self.client = p.connect(p.GUI) 
@@ -196,7 +125,6 @@ class Dog(gym.Env):
 									 self._p.addUserDebugParameter("Kp(arm_yaw)",0, 1, self.param_opt[6]),
 									 self._p.addUserDebugParameter("Kd(arm_yaw)",0, 1, self.param_opt[7]),
 									 self._p.addUserDebugParameter("Delta",0, 0.5, self.param_opt[8])
-									 
 									 ]
 
 				self.dynamics_tuners = {"contactStiffness": self._p.addUserDebugParameter("contactStiffness", max(0, 0.5*self.dynamcis_setting["contactStiffness"]), 2*self.dynamcis_setting["contactStiffness"], self.dynamcis_setting["contactStiffness"]),
@@ -210,7 +138,6 @@ class Dog(gym.Env):
 										"max_force":self._p.addUserDebugParameter("max_force",0, 240, self.dynamcis_setting["max_force"]), 
 										"control_step":self._p.addUserDebugParameter("control_step",0, 0.1, self.dynamcis_setting["control_step"]),
 										"mass_body":self._p.addUserDebugParameter("mass_body",0, 100, self.dynamcis_setting["mass_body"])
-
 										}
 
 			if self.action_tuner_enable:
@@ -285,7 +212,6 @@ class Dog(gym.Env):
 		elif self.state_mode == "body_arm_leg_full_p":
 			self.s_dim = 16 * (self.num_history_observation + 1)
 
-
 		self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.s_dim,), dtype=np.float32)
 
 		self.t = 0
@@ -309,7 +235,6 @@ class Dog(gym.Env):
 		# print(f"THETA1: {self.theta1}    THETA2: {self.theta2}")
 		# self.stand_pos = [0.0, -0.795, 0.617, 0.0, -0.795, 0.617, 0.0, self.theta1, self.theta2, 0.0, self.theta1, self.theta2]
 		self.stand_pos = [0.0, -PI/2, self._theta2_prime_hat(-PI/2), 0.0, -PI/2, self._theta2_prime_hat(-PI/2), 0.0, -0.94, -1, 0.0, -0.94, -1]
-
 
 		self.motor_force_l = self.motor_force_r = 50
 		self.r_offset, self.p_offset, self.y_offset, self.w_r_offset, self.w_p_offset, self.w_y_offset = 0, 0, 0, 0, 0, 0
@@ -342,10 +267,10 @@ class Dog(gym.Env):
 		self.observations_buffer = []
 		self.obs_buffer_size = 10
 
-		
-
 		self.delta_x = self.param_opt[8] 
 		self.progressing_delta_x = self.delta_x
+
+		
 
 
 	def build_world(self):
@@ -443,12 +368,22 @@ class Dog(gym.Env):
 
 
 		if self.randomise:
-			random_dynamics = {"mass_body": np.random.uniform(self.dynamcis_setting["mass_body"]*0.8, self.dynamcis_setting["mass_body"]*1.2),
-							   "jointDamping": np.random.uniform(0, 0.04),
-							   "max_force": np.random.uniform(self.dynamcis_setting["max_force"]*0.8, self.dynamcis_setting["max_force"]*1.2),
-							   "maxJointVelocity": np.random.uniform(self.dynamcis_setting["maxJointVelocity"]*0.8, self.dynamcis_setting["maxJointVelocity"]*1.2),
-							   "latency": np.random.uniform(0, 0.06),
-							   "control_step": np.random.uniform(0.001, 0.003)}
+			half_range = self.randomise / 10
+			random_dynamics = {"mass_body": np.random.uniform(self.dynamcis_setting["mass_body"]*(1-half_range), self.dynamcis_setting["mass_body"]*(1+half_range)),
+							   # "jointDamping": np.random.uniform(0, 0.04),
+							   "jointDamping": np.random.uniform(self.dynamcis_setting["jointDamping"]*(1-half_range), self.dynamcis_setting["jointDamping"]*(1+half_range)),
+							   "max_force": np.random.uniform(self.dynamcis_setting["max_force"]*(1-half_range), self.dynamcis_setting["max_force"]*(1+half_range)),
+							   "maxJointVelocity": np.random.uniform(self.dynamcis_setting["maxJointVelocity"]*(1-half_range), self.dynamcis_setting["maxJointVelocity"]*(1+half_range)),
+							   "lateralFriction_toe": np.random.uniform(self.dynamcis_setting["lateralFriction_toe"]*(1-half_range), self.dynamcis_setting["lateralFriction_toe"]*(1+half_range)),
+							   "contactStiffness": np.random.uniform(self.dynamcis_setting["contactStiffness"]*(1-half_range), self.dynamcis_setting["contactStiffness"]*(1+half_range)),  # Note that in some experiments this is not randomised
+							   "contactDamping": np.random.uniform(self.dynamcis_setting["contactDamping"]*(1-half_range), self.dynamcis_setting["contactDamping"]*(1+half_range)) # Note that in some experiments this is not randomised
+							   # "latency": np.random.uniform(0, 0.06),
+							   # "control_step": np.random.uniform(0.001, 0.003)
+							   }
+			if 'k' in self.custom_robot:
+				self.k = np.random.uniform(self.custom_robot["k"]*(1-half_range), self.custom_robot["k"]*(1+half_range))
+			else:
+				self.k = np.random.uniform(0.61*(1-half_range), 0.61*(1+half_range))
 		else:
 			random_dynamics = {}
 
@@ -493,16 +428,9 @@ class Dog(gym.Env):
 
 		self.action_test = [1, 1, -1, -1]
 
-
-
-		# print("[DEBUG B] inertia: ", self._p.getDynamicsInfo(self.dogId, -1)[2])
-
-
-
-
-
 		if self.mode == "stand":
-			self.ini_pos = [0.0, -PI/2, self._theta2_prime_hat(-PI/2), 0.0, -PI/2, self._theta2_prime_hat(-PI/2), 0.0, -0.94, -1, 0.0, -0.94, -1]
+			self.ini_pos = [0.0, -PI/2, self._theta2_prime_hat(-PI/2), 0.0, -PI/2, self._theta2_prime_hat(-PI/2), 0.0, self._theta1_hat(-1), -1, 0.0, self._theta1_hat(-1), -1]  
+			# self.ini_pos = [0.0, -PI/2, self._theta2_prime_hat(-PI/2), 0.0, -PI/2, self._theta2_prime_hat(-PI/2), 0.0, -0.94, -1, 0.0, -0.94, -1]  # UPDATE: THETA 1 IS CALCULATED BY THETA 2 
 		elif self.mode == "sleep" or self.mode == "standup":
 			self.ini_pos = [-0.5, -1.1, 2.79, 0.5, -1.1, 2.79, -1, -1.4, 2, 1, -1.4, 2]
 
@@ -560,6 +488,9 @@ class Dog(gym.Env):
 
 		original_state = [i for i in state]
 
+		self.leg_offsets = [0]*4   # some experiemnts forgot to initialise this value !!!
+		self.leg_offsets_old = [0]*4   # some experiemnts forgot to initialise this value !!!
+
 		self.p_error_buffer = [0]
 		self.d_error_buffer = [0]
 		self.p_error_yaw_buffer = [0]
@@ -582,6 +513,13 @@ class Dog(gym.Env):
 		return state
 
 	def step(self, action=[], param=None, param_opt=None):
+
+		if DEBUG:
+			action = [0]*6
+
+		
+
+
 		# action: from-1 to 1, incremental position
 		# print(action)
 
@@ -628,13 +566,12 @@ class Dog(gym.Env):
 			if self.tuner_enable:
 				# it is not necessary to check self.arm_pd_control. parameters for arms would all be zero when self.arm_pd_control == True
 				self.param_opt = [self._p.readUserDebugParameter(tuner) for tuner in self.param_tuners[:9]]
-
 				self.delta_x = self.param_opt[8] # if not self.progressing else self.progressing_delta_x
 
 
 
-			self.progressing = True if self.param_opt[3] == 0 else False  # DEVELOPING FEATURE
-			self.progressing = False # TODO
+			# self.progressing = True if self.param_opt[3] == 0 else False  # DEVELOPING FEATURE
+			# self.progressing = False # TODO
 
 
 			reset_button_value = self._p.readUserDebugParameter(self.reset_button)
@@ -681,7 +618,7 @@ class Dog(gym.Env):
 			reward = height + x + 0.5
 
 			self.t += 1
-			if self.t > 1000 or height < 0.2 or self.pitch > -0.7: #-0.27:
+			if self.t > self.max_steps or height < 0.2 or self.pitch > -0.7: #-0.27:
 				self.done = True
 			return state, reward, self.done, {"height": height}
 
@@ -784,7 +721,9 @@ class Dog(gym.Env):
 		elif self.leg_action_mode == "none":
 			assert np.all(np.array(self.leg_offsets) == 0)
 
-		self.leg_offsets = box(self.leg_offsets, [[-0.6, 0.6]]*4)[0]
+		self.leg_offsets = box(self.leg_offsets, [self.leg_offset_range]*4)[0]
+		# print("[DEBUG] ACTION: ", action)
+		# print("[DEBUG] LEG OFFSET: ", self.leg_offsets)
 
 		for i in range(max_iter+1):
 			timer7 = time.time()
@@ -828,15 +767,16 @@ class Dog(gym.Env):
 				if self.progressing:
 					self.error_buffer_size = 1000
 					assert self.error_buffer_size >= 1000
-					if self.sub_t > 200 and np.mean(np.absolute(self.d_error_buffer[-1000:])) < 0.08 and np.mean(np.absolute(self.p_error_buffer[-1000:])) < 0.1:
-						if self.progressing_A_multiplier < 2:
+					if self.sub_t > 200 and np.mean(np.absolute(self.d_error_buffer[-1000:])) < 0.2 and np.mean(np.absolute(self.p_error_buffer[-1000:])) < 0.1:
+
+						if self.progressing_A_multiplier < self.param_opt[3]: # TODO: THIS IS INCONSITENT WITH C++ VERSION
 							self.progressing_A_multiplier += 0.001
 						# if self.progressing_delta_x < 0.1:
 						# 	self.progressing_delta_x += 0.0001
-						print("UPGRADED!!!!!! A FACTOR: ", self.progressing_A_multiplier, "  DELAT_X: ", self.progressing_delta_x)
+						# print("UPGRADED!!!!!! A FACTOR: ", self.progressing_A_multiplier, "  DELAT_X: ", self.progressing_delta_x)
 					else:
-						print("AVERAGE ERROR: ", np.mean(np.absolute(self.d_error_buffer[-100:])), "  A FACTOR: ", self.progressing_A_multiplier, "  DELAT_X: ", self.progressing_delta_x)
-
+						pass
+						# print("AVERAGE ERROR: ", np.mean(np.absolute(self.d_error_buffer[-100:])), "  A FACTOR: ", self.progressing_A_multiplier, "  DELAT_X: ", self.progressing_delta_x)
 
 
 		self.leg_offsets_old = [i for i in self.leg_offsets]
@@ -882,7 +822,7 @@ class Dog(gym.Env):
 		reward = height - limit_cost + x - action_cost + 0.5
 		self.t += 1
 
-		if self.t > 1000 or height < 0.2 or abs(self.p_error) > 0.65 :  #self.pitch > -0.7  (error around 0.64066)  : #-0.27:
+		if self.t > self.max_steps or height < 0.2 or abs(self.p_error) > 0.65 :  #self.pitch > -0.7  (error around 0.64066)  : #-0.27:
 			# print(self.t > 1000, ", ", height < 0.2, ", ", self.pitch > -0.7, ", PITCH: ", self.pitch)
 			# print("T: ",self.t , " HEIGHT: ", height, "P ERROR: ", self.p_error)
 			# assert self.t > 1
@@ -965,7 +905,9 @@ class Dog(gym.Env):
 				height = full_state[2]
 
 				if self.randomise:
-					state = state + np.array(list(np.random.uniform(-0.02, 0.02, size=6)) + list(np.random.uniform(-0.01, 0.01, size=4)) )
+					half_range_imu = self.randomise / 100 * 2 #  1 --> 0.02
+					half_range_encoder = self.randomise / 100 #  1 --> 0.01
+					state = state + np.array(list(np.random.uniform(-half_range_imu, half_range_imu, size=6)) + list(np.random.uniform(-half_range_encoder, half_range_encoder, size=4)) )
 
 
 			elif self.state_mode == "body_arm_leg_full_p":
@@ -985,7 +927,9 @@ class Dog(gym.Env):
 				height = full_state[2]
 
 				if self.randomise:
-					state = state + np.array(list(np.random.uniform(-0.02, 0.02, size=6)) + list(np.random.uniform(-0.01, 0.01, size=8)))
+					half_range_imu = self.randomise / 100 * 2 #  1 --> 0.02
+					half_range_encoder = self.randomise / 100 #  1 --> 0.01
+					state = state + np.array(list(np.random.uniform(-half_range_imu, half_range_imu, size=6)) + list(np.random.uniform(-half_range_encoder, half_range_encoder, size=8)))
 
 			
 			self.states.append(state)
@@ -1026,8 +970,6 @@ class Dog(gym.Env):
 			self.step_param_buffered[1] = min(max(self.param_opt[0] + self.param_opt[1] * self.p_error + self.param_opt[2] * self.d_error, self.B_range[0]), self.B_range[1])
 			self.step_param_buffered[0] = min(max(self.step_param_buffered[1] * self.param_opt[3], self.A_range[0]), self.A_range[1])
 			
-
-
 			# else:
 			# 	raise ValueError('Optimised parameters are not provided in partial mode.')
 
@@ -1047,16 +989,17 @@ class Dog(gym.Env):
 				self.step_param_buffered[1] = max(min(self.step_param_buffered[1], self.B_range[1]), self.B_range[0])
 			else:
 				self.step_param_buffered[1] = min(max(self.param_opt[0] + self.param_opt[1] * self.p_error + self.param_opt[2] * self.d_error, self.B_range[0]), self.B_range[1])
+				# print(f"self.step_param_buffered[1] = min(max({self.param_opt[0]} + {self.param_opt[1]} * {self.p_error} + {self.param_opt[2]} * {self.d_error}, {self.B_range[0]}), {self.B_range[1]}) = {self.step_param_buffered[1]}")
 				# self.step_param_buffered[0] = min(max(self.step_param_buffered[1] * self.param_opt[3], self.A_range[0]), self.A_range[1])
 				if not self.progressing:
 					self.step_param_buffered[0] = min(max(self.step_param_buffered[1] * self.param_opt[3], self.A_range[0]), self.A_range[1])
+					# print(f"self.step_param_buffered[0] = min(max({self.step_param_buffered[1]} * {self.param_opt[3]}, {self.A_range[0]}), {self.A_range[1]}) = {self.step_param_buffered[0]}")
 				else:
 					assert self.A_range[1] == float("inf")
 					# print(self.step_param_buffered[1] * self.progressing_A_multiplier)
 					# print(f"max(self.step_param_buffered[1] * self.progressing_A_multiplier, self.A_range[0]) = {max(self.step_param_buffered[1] * self.progressing_A_multiplier, self.A_range[0])}")
 					# print(f"min({max(self.step_param_buffered[1] * self.progressing_A_multiplier, self.A_range[0])}, self.A_range[1]) = {self.step_param_buffered[0]}")
 					self.step_param_buffered[0] = min(max(self.step_param_buffered[1] * self.progressing_A_multiplier, self.A_range[0]), self.A_range[1])
-
 
 		self.step_param_buffer.append(self.step_param_buffered)
 
@@ -1078,16 +1021,23 @@ class Dog(gym.Env):
 
 		assert(np.all(np.array(leg_offsets) <= 0.6) and np.all(np.array(leg_offsets) >= -0.6))
 
+		if self.external_force:
+			max_rand_force = self.external_force*10
+			self._p.applyExternalForce(self.dogId, -1, [np.random.uniform(-max_rand_force, max_rand_force), 0, np.random.uniform(-max_rand_force, max_rand_force)], [0, 0, 0], flags=self._p.LINK_FRAME)
+
+
 		if param is not None or param_opt is not None:
 
 			self._update_step_param_buffered(action=agent_action)  # param_opt -> step_param
 			a_sin = self.step_param[0]
 			b_sin = self.step_param[1]
 
-			# print("[DEBUG] a_sin: ", a_sin)
-
 			theta2r_delta = - a_sin*(math.sin(b_sin*self.sub_t-PI/2)/2+0.5)
 			theta2l_delta = - a_sin*(-math.sin(b_sin*self.sub_t-PI/2)/2+0.5)
+
+			# print("[DEBUG] self.param_opt: ", self.param_opt)
+			# print("[DEBUG] self.a_sin: ", a_sin)
+			# print("[DEBUG] self.b_sin: ", b_sin)
 
 			if not self.param_opt[8] == 0:  # new gait, the robot will step forward
 
@@ -1188,8 +1138,9 @@ class Dog(gym.Env):
 				inter_pos[10], inter_pos[11] = self._IK(x_togo_l, y_togo_l)
 
 				if self.sub_step_callback is not None:
-					self.sub_step_callback(t=self.sub_t, basic_action=[inter_pos[7],inter_pos[8],inter_pos[10],inter_pos[11]], offset=leg_offsets,
-										   final_action=[inter_pos[7] - leg_offsets[0], inter_pos[8] + leg_offsets[1], inter_pos[10] - leg_offsets[2], inter_pos[11] + leg_offsets[3]])  
+					self.sub_step_callback(t=self.sub_t, leg_basic_action=[inter_pos[7],inter_pos[8],inter_pos[10],inter_pos[11]], leg_offset=leg_offsets,
+										   leg_final_action=[inter_pos[7] - leg_offsets[0], inter_pos[8] + leg_offsets[1], inter_pos[10] - leg_offsets[2], inter_pos[11] + leg_offsets[3]],
+										   arm_final_action=[inter_pos[0], inter_pos[1], inter_pos[3], inter_pos[4]])  
 				# TODO: MAKE A MORE GENERAL AND INFORMATIVE VERSION
 
 				inter_pos[7] -= leg_offsets[0]
@@ -1297,7 +1248,7 @@ class Dog(gym.Env):
 		# beta = PI - theta2 - gamma
 		# alpha = -PI/2 - theta1 + theta2 + gamma
 
-		global gamma, k, a, b, c, l
+		gamma, k, a, b, c, l = self.gamma, self.k, self.a, self.b, self.c, self.l
 
 		neg_theta2 = -theta2
 		try:
@@ -1309,10 +1260,12 @@ class Dog(gym.Env):
 		return ans
 
 	def _FK(self, th1, th2):
+		gamma, k, a, b, c, l = self.gamma, self.k, self.a, self.b, self.c, self.l
 		return c*math.cos(th1) + b*math.cos(th1+th2), c*math.sin(th1) + b*math.sin(th1+th2)
 
 
 	def _IK(self, x, y):
+		gamma, k, a, b, c, l = self.gamma, self.k, self.a, self.b, self.c, self.l
 
 		def th2_ik(x, y):
 			try:
@@ -1357,7 +1310,6 @@ class Dog(gym.Env):
 		# p.changeDynamics(self.dogId, 0, mass=0.666, maxJointVelocity=20, linearDamping=0, angularDamping=0, jointDamping=0)
 		self._p.changeDynamics(self.dogId, -1, mass=mass_body, linearDamping=linearDamping, angularDamping=angularDamping, jointDamping=jointDamping)
 		# return 0
-		
 
 		for link in abduct_links:
 			self._p.changeDynamics(self.dogId, link, mass=mass_abduct, 
@@ -1395,6 +1347,10 @@ class Dog(gym.Env):
 		self.control_step = control_step
 
 		self._p.setPhysicsEngineParameter(fixedTimeStep=self.control_step)
+
+
+	def set_dynamics(self, custom_dynamics):
+		self.dynamcis_setting = {**self.default_dynamcis, **custom_dynamics}
 
 
 	def debug_dynamics(self):
@@ -1557,47 +1513,26 @@ class Dog(gym.Env):
 
 
 
-
-def test():
-
-	dog = Dog(render=True, real_time=False, immortal=False, custom_dynamics=False, version=3, mode="stand")
-	# dog.debug_dynamics()
-	
-	n_epi = 0
-	while True:
-		done = False
-
-		dog.reset()
-		print("OMEGA_PITCH: ", dog.get_full_state()[10])
-		while not done:
-		# p_set = p.readUserDebugParameter(p_debug)
-		# y_set = p.readUserDebugParameter(y_debug)
-		# r_set = p.readUserDebugParameter(r_debug)
-		# print(f"set pitch to {p_set}")
-		# p.resetBasePositionAndOrientation(dogId, [0, 0, 0.7], p.getQuaternionFromEuler([r_set,p_set,y_set]))
-			s, r, done, info =  dog.step(dog.action_space.sample(), [0.6,0.6])
-		n_epi += 1
-
 def human_optimiser():
 
-	DYN_CONFIG = {'lateralFriction_toe': 0.8, #1, # 0.6447185797960826, 
-			  'lateralFriction_shank': 0.737, #0.6447185797960826  *  (0.351/0.512),
-			  'contactStiffness': 1530, # 4173, #2157.4863390669952, 1615?
-			  'contactDamping': 160, # 122, #32.46233575737161,    150?
-			  'linearDamping': 0.03111169082496665, 
-			  'angularDamping': 0.04396695866661371, 
-			  'jointDamping': 0.03118494025640309, 
-			  "max_force": 12,
-			  "mass_body": 10.5
-			  # 'w_y_offset': 0.0021590823485152914
-			  }
+	DYN_CONFIG = {'lateralFriction_toe': 0.7, #1, # 0.6447185797960826, 
+				  'lateralFriction_shank': 0.5, #0.6447185797960826  *  (0.351/0.512),
+				  'contactStiffness': 2592, #2729, # 4173, #2157.4863390669952, 1615?
+				  'contactDamping': 450, #414, #160, # 122, #32.46233575737161,    150?
+				  'linearDamping': 0.03111169082496665, 
+				  'angularDamping': 0.04396695866661371, 
+				  'jointDamping': 0.03118494025640309, 
+				  "max_force": 12, #10,
+				  "mass_body": 9.5 #10.5
+				  }
 
 	LEG_ACTION = ["none", "parallel_offset", "hips_offset", "knees_offset", "hips_knees_offset"][1]
 
-	env_args = {"render": True, "fix_body": False, "real_time": True, "immortal": True, 
+	env_args = {"render": True, "fix_body": False, "real_time": True, "immortal": False, 
 				"version": 3, "normalised_abduct": True, "mode": "stand", "debug_tuner_enable" : True, "action_mode":"residual", "state_mode":"body_arm", "leg_action_mode":LEG_ACTION,
-				"tuner_enable": True, "action_tuner_enable": True, "A_range": (0.01, float("inf")), "gait": "rose", "custom_dynamics": DYN_CONFIG, "param_opt": [0.022, 0, 0, 0, 0.1, 0.1, 0.1, 0.1, 0.011],
-				"fast_error_update": True, "arm_pd_control": True}
+				"tuner_enable": True, "action_tuner_enable": True, "A_range": (0.01, float("inf")), "gait": "triangle", "custom_dynamics": DYN_CONFIG, "param_opt": [0.022, 0, 0, 10, 0.1, 0.1, 0.1, 0.1, 0.011],
+				"fast_error_update": True, "arm_pd_control": True, "custom_robot": {"k": 0.69}, "progressing": False, "max_steps": 2000,
+				"leg_offset_multiplier": 0.01, "action_multiplier": 0.01} # , "progressing_agent_factor": True
 
 	dog = Dog(**env_args)
 	# dog._set_dynamics(**DYN_CONFIG)
@@ -1606,57 +1541,55 @@ def human_optimiser():
 	while True:
 		done = False
 		dog.reset()
+		n_step = 0
 		while not done:
-			s, r, done, info =  dog.step([0,0,0,0,0,0], param_opt=[0.016, 0, 0, 5.053, 0.1, 0.1, 0.1, 0.1, 0.01])
+			s, r, done, info =  dog.step([0]*6, param_opt=[0]*9)
+			n_step += 1
+			print("STEP ", n_step) 
 		n_epi += 1
 
-def simple_test():
-	global k_
-	k_ = 0.6102
-	dog = Dog(render=False, real_time=False, immortal=False, custom_dynamics=False, version=3, mode="stand")
-	th2 = dog._theta1_hat(-1.00009)
-	print(th2)
 
-def test_pitch():
-	dog = Dog(render=True, real_time=True, immortal=False, custom_dynamics=False, version=3, mode="stand")
-	dog.reset()
-	while True:
-		# dog.step_jpos([-1.73918e-05, -1.46079, 0.99807, -1.8719e-05, -1.46079, 0.998076, 0.000439517, -1.09479, -1.00009, -0.000370475, -1.09484, -1.00013])
-		dog.step_jpos()
-		time.sleep(0.001)
-		dog.get_full_state()
-		print(dog.pitch)
+def simple_debug():
 
-def test_standup():
-	dog = Dog(render=True, real_time=True, immortal=False, custom_dynamics=False, version=3, mode="standup")
-	dog.reset()
-	while True:
-		pass
+	def sub_step_callback(t, leg_basic_action, leg_offset, leg_final_action, arm_final_action):
+		print(f"SUB STEP {t}\n")
+		# print("BASIC ACTION: [{:.4f}, {:.4f}, {:.4f}, {:.4f}]\n".format(leg_basic_action[0], leg_basic_action[1], leg_basic_action[2], leg_basic_action[3]))
+		# print("OFFSET: [{:.4f}, {:.4f}, {:.4f}, {:.4f}]\n".format(leg_offset[0], leg_offset[1], leg_offset[2], leg_offset[3]))
+		# print("FINAL ACTION: [{:.4f}, {:.4f}, {:.4f}, {:.4f}]\n".format(leg_final_action[0], leg_final_action[1], leg_final_action[2], leg_final_action[3]))
+		print("ARM FINAL ACTION: [{:.4f}, {:.4f}, {:.4f}, {:.4f}]\n".format(arm_final_action[0], arm_final_action[1], arm_final_action[2], arm_final_action[3]))
 
-def test_observation():
-	DYN_CONFIG = {#'mass_body': 5.555,
-				  'lateralFriction_toe': 1, # 0.6447185797960826, 
-				  'lateralFriction_shank': 0.737, #0.6447185797960826  *  (0.351/0.512),
-				  'contactStiffness': 4173, #2157.4863390669952, 
-				  'contactDamping': 122, #32.46233575737161, 
+	DYN_CONFIG = {'lateralFriction_toe': 0.7, #1, # 0.6447185797960826, 
+				  'lateralFriction_shank': 0.5, #0.6447185797960826  *  (0.351/0.512),
+				  'contactStiffness': 2592, #2729, # 4173, #2157.4863390669952, 1615?
+				  'contactDamping': 450, #414, #160, # 122, #32.46233575737161,    150?
 				  'linearDamping': 0.03111169082496665, 
 				  'angularDamping': 0.04396695866661371, 
 				  'jointDamping': 0.03118494025640309, 
-				  # 'w_y_offset': 0.0021590823485152914
+				  "max_force": 12, #10,
+				  "mass_body": 9.5 #10.5
 				  }
 
+	LEG_ACTION = ["none", "parallel_offset", "hips_offset", "knees_offset", "hips_knees_offset"][1]
 
-	dog = Dog(render=True, real_time=False, immortal=False, fix_body=True, custom_dynamics=DYN_CONFIG, version=3, mode="standup", num_history_observation=9, state_mode="body_arm_leg_full", 
-		action_mode="residual", leg_action_mode="none", randomise=True)
-	# dog.set_dynamics(**DYN_CONFIG)
+	env_args = {"render": True, "fix_body": True, "real_time": True, "immortal": False, 
+				"version": 3, "normalised_abduct": True, "mode": "stand", "debug_tuner_enable" : True, "action_mode":"residual", "state_mode":"body_arm", "leg_action_mode":LEG_ACTION,
+				"tuner_enable": False, "action_tuner_enable": False, "A_range": (0.01, float("inf")), "gait": "triangle", "custom_dynamics": DYN_CONFIG, "param_opt": [0.022, 0, 0, 10, 0, 0, 0, 0, 0.011], #[0.022, 0, 0, 10, 0.1, 0.1, 0.1, 0.1, 0.011],
+				"fast_error_update": True, "arm_pd_control": True, "custom_robot": {"k": 0.69}, "progressing": False, "max_steps": 2000,
+				"leg_offset_multiplier": 0.01, "action_multiplier": 0.01, "sub_step_callback": sub_step_callback} # , "progressing_agent_factor": True
+
+	dog = Dog(**env_args)
+	# dog._set_dynamics(**DYN_CONFIG)
+
+	n_epi = 0
 	while True:
 		done = False
-		s = dog.reset()
-		assert len(list(s)) == 14*10
+		dog.reset()
+		n_step = 0
 		while not done:
-			s, r, done, info =  dog.step([0,0,0,0,0,0], param_opt=[0.086, 0, 0, 5.368, 0.1, 0.1, 0.1, 0.1, 0.11])
-			# dog.step_jpos([0]*12)
-			assert len(list(s)) == 14*10
+			s, r, done, info =  dog.step([1]*6)
+			n_step += 1
+			print("STEP ", n_step) 
+		n_epi += 1
 
 
-# human_optimiser()
+# simple_debug()
