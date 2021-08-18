@@ -33,13 +33,14 @@ class Dog(gym.Env):
         		   it will be reshaped to length 8 with padding zeros.
         gait: "rose", "triangle", "sine", or "line". only available when the last parameters in param_opt is not equal to 0
         randomise: it could be a float number from 0 to 1
+        leg_bootstrapping: developing...
 
     """
 	def __init__(self, render=False, fix_body=False, real_time=False, immortal=False, version=3, normalised_abduct=False,
 		mode="stand", action_mode="residual", action_multiplier=0.4, residual_multiplier=0.2, note="", tuner_enable=False, action_tuner_enable=False,
 		A_range = (0.01, 1), B_range = (0.01, 0.1), arm_pd_control=False, fast_error_update=False, state_mode="body_arm_p", leg_action_mode="none", leg_offset_multiplier=0.2, 
 		ini_step_param=[1, 0.35], experiment_info_str = "", param_opt=[0.015, 0, 0, 6, 0.1, 0.1, 0.1, 0.1, 0], debug_tuner_enable=False, gait="rose", sub_step_callback=None,
-		num_history_observation=0, randomise=0, external_force=0, custom_dynamics={}, custom_robot={}, progressing=False, max_steps=1000, leg_offset_range=[-0.6, 0.6]):
+		num_history_observation=0, randomise=0, external_force=0, custom_dynamics={}, custom_robot={}, progressing=False, max_steps=1000, leg_offset_range=[-0.6, 0.6], leg_bootstrapping=False):
 		super(Dog, self).__init__()
 
 		self.render = render
@@ -80,6 +81,7 @@ class Dog(gym.Env):
 			  
 		self.progressing = progressing  # DEVELOPING FEATURE
 		self.external_force = external_force
+		self.leg_bootstrapping = leg_bootstrapping
 
 		self.progressing_A_multiplier = 0
 
@@ -490,8 +492,10 @@ class Dog(gym.Env):
 
 		original_state = [i for i in state]
 
-		self.leg_offsets = [0]*4   # some experiemnts forgot to initialise this value !!!
-		self.leg_offsets_old = [0]*4   # some experiemnts forgot to initialise this value !!!
+		if not self.leg_bootstrapping:
+			# if self.leg_bootstrapping==True, do not initialise two leg offsets vectors
+			self.leg_offsets = [0]*4   # some experiemnts forgot to initialise this value !!!
+			self.leg_offsets_old = [0]*4   # some experiemnts forgot to initialise this value !!!
 
 		self.p_error_buffer = [0]
 		self.d_error_buffer = [0]
@@ -1026,7 +1030,8 @@ class Dog(gym.Env):
 			inter_pos = fin_pos
 			leg_offsets = self.leg_offsets
 
-		assert(np.all(np.array(leg_offsets) <= self.leg_offset_range[1]) and np.all(np.array(leg_offsets) >= self.leg_offset_range[0]))
+		if not self.leg_bootstrapping:
+			assert(np.all(np.array(leg_offsets) <= self.leg_offset_range[1]) and np.all(np.array(leg_offsets) >= self.leg_offset_range[0]))
 
 		if self.external_force:
 			max_rand_force = self.external_force*10
