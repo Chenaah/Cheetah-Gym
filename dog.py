@@ -1088,7 +1088,7 @@ class Dog(gym.Env):
 
 				elif self.gait == "rose":
 
-					a_rose = self.delta_x
+					a_rose = max(self.delta_x, 0.001)
 					k_rose = 4*a_sin/a_rose
 
 					if sub_sub_t < period_half:
