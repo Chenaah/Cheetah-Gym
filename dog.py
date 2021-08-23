@@ -217,6 +217,8 @@ class Dog(gym.Env):
 			self.s_dim = 16 * (self.num_history_observation + 1)
 		elif self.state_mode == "body_arm_leg_full_i":  # DEVELOPING
 			self.s_dim = 15 * (self.num_history_observation + 1) 
+		elif self.state_mode == "body_arm_leg_full_il":  # DEVELOPING
+			self.s_dim = 16 * (self.num_history_observation + 1) 
 
 		self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.s_dim,), dtype=np.float32)
 
@@ -277,6 +279,7 @@ class Dog(gym.Env):
 		self.progressing_delta_x = self.delta_x
 
 		self.leg_state_indicator = 0 #developing
+		self.leg_state_indicators = [0, 0]
 
 		
 
@@ -501,6 +504,9 @@ class Dog(gym.Env):
 			# if self.leg_bootstrapping==True, do not initialise two leg offsets vectors
 			self.leg_offsets = [0]*4   # some experiemnts forgot to initialise this value !!!
 			self.leg_offsets_old = [0]*4   # some experiemnts forgot to initialise this value !!!
+
+		self.leg_state_indicator = 0 #developing
+		self.leg_state_indicators = [0, 0]
 
 		self.p_error_buffer = [0]
 		self.d_error_buffer = [0]
@@ -957,6 +963,20 @@ class Dog(gym.Env):
 
 				state = np.array(list(state) + [self.leg_state_indicator]) # DEVEVLOPING!!
 
+			elif self.state_mode == "body_arm_leg_full_il":
+				joint_pos_lite = [joints_pos[0], joints_pos[1],  joints_pos[3], joints_pos[4], joints_pos[7], joints_pos[8], joints_pos[10], joints_pos[11]]
+				state = np.array(list(full_state[6:12]) + joint_pos_lite )
+				assert state.size == 3+3+4+4
+				x = full_state[0]
+				height = full_state[2]
+
+				if self.randomise and not self.only_randomise_dyn:
+					half_range_imu = self.randomise / 100 * 2 #  1 --> 0.02
+					half_range_encoder = self.randomise / 100 #  1 --> 0.01
+					state = state + np.array(list(np.random.uniform(-half_range_imu, half_range_imu, size=6)) + list(np.random.uniform(-half_range_encoder, half_range_encoder, size=8)))
+
+				state = np.array(list(state) + self.leg_state_indicators) # DEVEVLOPING!!
+
 			
 			self.states.append(state)
 			# print("[DEBUG] ORIGINAL STATE: ", state)
@@ -1101,6 +1121,8 @@ class Dog(gym.Env):
 						x_togo_l = self.x_original + (self.delta_x/period_half)*(sub_sub_t-period_half)
 						y_togo_l = self.y_original + a_sin * math.sin(PI/period_half*(sub_sub_t-period_half))
 
+					self.leg_state_indicators = [(self.delta_x/period_half)*sub_sub_t, y_togo_l]  # DEVELOPING
+
 				elif self.gait == "rose":
 
 					a_rose = max(self.delta_x, 0.001)
@@ -1124,6 +1146,8 @@ class Dog(gym.Env):
 						y_togo_r = self.y_original
 						x_togo_l = self.x_original + a_rose * math.cos(2*th) * math.cos(th)
 						y_togo_l = self.y_original + k_rose * a_rose * math.cos(2*th) * math.sin(th)
+
+					self.leg_state_indicators = [th, y_togo_l]  # DEVELOPING
 
 				elif self.gait == "triangle":
 
@@ -1160,6 +1184,8 @@ class Dog(gym.Env):
 							x_togo_l = x_1 + (-math.sin(2*b_sin*(sub_sub_t-period_half)-PI/2)/2+0.5)*(x_2-x_1)
 							y_togo_l = y_1 + (-math.sin(2*b_sin*(sub_sub_t-period_half)-PI/2)/2+0.5)*(y_2-y_1)
 			
+
+					self.leg_state_indicators = [b_sin*(sub_sub_t-period_half), y_togo_l]  # DEVELOPING
 
 				self.leg_state_indicator = y_togo_r  # develeoping
 
@@ -1211,6 +1237,7 @@ class Dog(gym.Env):
 					inter_pos[10] = self.theta1 - theta2l_delta - leg_offsets[2]
 
 				self.leg_state_indicator = theta2r_delta
+				self.leg_state_indicators = [self.sub_t%(period_half+period_half), theta2r_delta]
 
 			elif self.gait == "none":
 				inter_pos[8] = self.theta2  + leg_offsets[1]
@@ -1611,7 +1638,7 @@ def simple_debug():
 	LEG_ACTION = ["none", "parallel_offset", "hips_offset", "knees_offset", "hips_knees_offset"][1]
 
 	env_args = {"render": True, "fix_body": True, "real_time": True, "immortal": False, 
-				"version": 3, "normalised_abduct": True, "mode": "stand", "debug_tuner_enable" : True, "action_mode":"residual", "state_mode":"body_arm_leg_full_i", "leg_action_mode":LEG_ACTION,
+				"version": 3, "normalised_abduct": True, "mode": "stand", "debug_tuner_enable" : True, "action_mode":"residual", "state_mode":"body_arm_leg_full_il", "leg_action_mode":LEG_ACTION,
 				"tuner_enable": False, "action_tuner_enable": False, "A_range": (0.01, float("inf")), "gait": "triangle", "custom_dynamics": DYN_CONFIG, "param_opt": [0.022, 0, 0, 10, 0, 0, 0, 0, 0.011], #[0.022, 0, 0, 10, 0.1, 0.1, 0.1, 0.1, 0.011],
 				"fast_error_update": True, "arm_pd_control": True, "custom_robot": {"k": 0.69}, "progressing": False, "max_steps": 2000,
 				"leg_offset_multiplier": 0.01, "action_multiplier": 0.01, "sub_step_callback": sub_step_callback} # , "progressing_agent_factor": True
@@ -1627,7 +1654,7 @@ def simple_debug():
 		while not done:
 			s, r, done, info =  dog.step([1]*6)
 			n_step += 1
-			print("LEG IDICATOR  ", dog.leg_state_indicator) 
+			print("LEG IDICATORS  ", dog.leg_state_indicators) 
 		n_epi += 1
 
 
