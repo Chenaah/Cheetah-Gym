@@ -1091,7 +1091,7 @@ class Dog(gym.Env):
 				self.delta_x = self.param_opt[8] # SOME EXPERIEMNT FORGOT THIS UPDATING !!!
 
 
-				period_half = PI/b_sin   # in this case, period_half=100  ->  b_sin=0.0314
+				period_half = PI/max(b_sin, 0.00001)   # in this case, period_half=100  ->  b_sin=0.0314
 				sub_sub_t = self.sub_t%(period_half+period_half)
 				# print("[DEBUG] half period: ", period_half, "  sub_t: ", sub_sub_t, " B: ", b_sin)
 
@@ -1125,7 +1125,7 @@ class Dog(gym.Env):
 
 				elif self.gait == "rose":
 
-					a_rose = max(self.delta_x, 0.001)
+					a_rose = max(self.delta_x, 0.00001)
 					k_rose = 4*a_sin/a_rose
 
 					if sub_sub_t < period_half:
