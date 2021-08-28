@@ -1224,6 +1224,7 @@ class Dog(gym.Env):
 
 			elif self.gait == "line":
 				assert self.version == 3  # version 2 is not supported anymore
+				period_half = PI/max(b_sin, 0.00001)
 
 				if (b_sin*self.sub_t < PI):
 					inter_pos[8] =  self.theta2 + theta2r_delta
