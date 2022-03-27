@@ -9,7 +9,7 @@ import gym
 from os import path
 import warnings
 import random
-from dog_utils import box, quat_to_YZX, PI
+from .dog_utils import box, quat_to_YZX, PI
 
 DEBUG = False
 
@@ -317,6 +317,9 @@ class Dog(gym.Env):
 		numJoints = self._p.getNumJoints(self.dogId)
 		for j in range(numJoints):
 			self._p.changeVisualShape(self.dogId, j, rgbaColor=[1, 1, 1, 1])
+
+		# table_height = 0.4
+		# self._p.loadURDF("cube.urdf", [1, 0, 0.5 - (1 - table_height)])  # , globalScaling=0.5
 		
 
 		# theta1 = 0.862
@@ -420,8 +423,8 @@ class Dog(gym.Env):
 			self.startpoint = [0, 0, 0.5562]#0.54]
 			self.startOrientation = self._p.getQuaternionFromEuler([0,-1.3414458169,0])
 		elif self.fix_body and self.mode == "sleep":
-			self.startpoint = [0, 0, 0.5]
-			self.startOrientation = self._p.getQuaternionFromEuler([0,0,0])
+			self.startpoint = [0, 0, 0.27]
+			self.startOrientation = self._p.getQuaternionFromEuler([0,0.05,0])
 		elif self.mode == "sleep" or self.mode == "standup" :
 			self.startpoint = [0, 0, 0.07]
 			self.startOrientation = self._p.getQuaternionFromEuler([0,0,0])
