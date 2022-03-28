@@ -1,4 +1,5 @@
 import os
+import pdb
 import pybullet
 from pybullet_utils import bullet_client as bc
 import pybullet_data
@@ -649,11 +650,8 @@ class Dog(gym.Env):
 
 
 		if np.array(action).size == 12:
-			for j, pos in zip(self.motor_ids_r, action):
-				self._p.setJointMotorControl2(self.dogId, j, self._p.POSITION_CONTROL, pos, force=self.motor_force_r, maxVelocity=self.max_vel)
-			for j, pos in zip(self.motor_ids_l, action):
-				self._p.setJointMotorControl2(self.dogId, j, self._p.POSITION_CONTROL, pos, force=self.motor_force_l, maxVelocity=self.max_vel)
-
+			for j, pos in zip(self.motor_ids, action):
+				self._p.setJointMotorControl2(self.dogId, j, self._p.POSITION_CONTROL, pos, force=self.motor_force_r if j in self.motor_ids_r else self.motor_force_l, maxVelocity=self.max_vel)
 			self.sub_t += 1
 			self.t += 1
 			self._p.stepSimulation() 
